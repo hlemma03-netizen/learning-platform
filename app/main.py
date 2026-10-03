@@ -7,6 +7,7 @@ from app.api.v1.auth import router as auth_router
 from app.core.config import settings
 from app.core.database import get_db
 
+from app.api.v1.courses import router as courses_router
 
 app = FastAPI(
     title=settings.app_name,
@@ -14,6 +15,7 @@ app = FastAPI(
 )
 
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(courses_router, prefix="/api/v1")
 
 @app.get("/")
 def root():
