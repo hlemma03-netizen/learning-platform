@@ -9,6 +9,16 @@ from app.core.database import Base
 # Import models here so Alembic can detect them
 from app.models.user import User
 from app.models.course import Course
+from app.models.lesson import Lesson
+from app.models.enrollment import Enrollment
+from app.models.assignment import Assignment
+from app.models.submission import Submission
+
+from app.models.quiz import Quiz
+from app.models.question import Question
+from app.models.quiz_option import QuizOption
+from app.models.quiz_attempt import QuizAttempt
+from app.models.attempt_answer import AttemptAnswer
 
 config = context.config
 

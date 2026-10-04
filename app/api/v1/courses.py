@@ -4,18 +4,22 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-
+from app.core.dependencies import require_student, require_teacher
 from app.models.course import Course
+from app.models.enrollment import Enrollment
 from app.models.user import User
 from app.schemas.course import CourseCreate, CourseResponse, CourseUpdate
 
-from app.core.dependencies import require_student, require_teacher
 
 router = APIRouter(
     prefix="/courses",
     tags=["Courses"],
 )
 
+
+# --------------------------------------------------
+# TEACHER: Create a course
+# --------------------------------------------------
 
 @router.post(
     "/",
@@ -39,6 +43,11 @@ def create_course(
 
     return course
 
+
+# --------------------------------------------------
+# TEACHER: Get my courses
+# --------------------------------------------------
+
 @router.get(
     "/my-courses",
     response_model=list[CourseResponse],
@@ -54,6 +63,11 @@ def get_my_courses(
     )
 
     return courses
+
+
+# --------------------------------------------------
+# TEACHER: Update my course
+# --------------------------------------------------
 
 @router.patch(
     "/{course_id}",
@@ -94,6 +108,11 @@ def update_course(
 
     return course
 
+
+# --------------------------------------------------
+# TEACHER: Delete my course
+# --------------------------------------------------
+
 @router.delete(
     "/{course_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -121,6 +140,12 @@ def delete_course(
     db.delete(course)
     db.commit()
 
+    return None
+
+
+# --------------------------------------------------
+# STUDENT: Get all published courses
+# --------------------------------------------------
 
 @router.get(
     "/",
@@ -132,11 +157,39 @@ def get_published_courses(
 ):
     courses = (
         db.query(Course)
-        .filter(Course.is_published == True)
+        .filter(Course.is_published.is_(True))
         .all()
     )
 
-    return courses
+    result = []
+
+    for course in courses:
+        enrollment = (
+            db.query(Enrollment)
+            .filter(
+                Enrollment.student_id == current_user.id,
+                Enrollment.course_id == course.id,
+            )
+            .first()
+        )
+
+        result.append(
+            CourseResponse(
+                id=course.id,
+                title=course.title,
+                description=course.description,
+                teacher_id=course.teacher_id,
+                is_published=course.is_published,
+                is_enrolled=enrollment is not None,
+            )
+        )
+
+    return result
+
+
+# --------------------------------------------------
+# STUDENT: Get one published course
+# --------------------------------------------------
 
 @router.get(
     "/{course_id}",
@@ -151,7 +204,7 @@ def get_course(
         db.query(Course)
         .filter(
             Course.id == course_id,
-            Course.is_published == True,
+            Course.is_published.is_(True),
         )
         .first()
     )
@@ -162,7 +215,27 @@ def get_course(
             detail="Course not found",
         )
 
-    return course
+    enrollment = (
+        db.query(Enrollment)
+        .filter(
+            Enrollment.student_id == current_user.id,
+            Enrollment.course_id == course.id,
+        )
+        .first()
+    )
+
+    return CourseResponse(
+        id=course.id,
+        title=course.title,
+        description=course.description,
+        teacher_id=course.teacher_id,
+        is_published=course.is_published,
+        is_enrolled=enrollment is not None,
+    )
+
+# --------------------------------------------------
+# TEACHER: Get one of my courses
+# --------------------------------------------------
 
 @router.get(
     "/teacher/{course_id}",
