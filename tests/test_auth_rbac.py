@@ -270,3 +270,103 @@ def test_refresh_token(client):
     assert response.status_code == 200
     assert "access_token" in response.json()
     assert "refresh_token" in response.json()
+
+def test_refresh_token_rotation(client):
+    response = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "rotation@example.com",
+            "password": "TestPassword123!",
+            "first_name": "Rotation",
+            "last_name": "Test",
+        },
+    )
+    assert response.status_code == 201
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "rotation@example.com",
+            "password": "TestPassword123!",
+        },
+    )
+
+    assert response.status_code == 200
+
+    old_refresh_token = response.json()["refresh_token"]
+
+    response = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": old_refresh_token},
+    )
+
+    assert response.status_code == 200
+
+    new_refresh_token = response.json()["refresh_token"]
+
+    assert new_refresh_token != old_refresh_token
+
+    # The old refresh token must now be unusable.
+    response = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": old_refresh_token},
+    )
+
+    assert response.status_code == 401
+
+    # The newly issued refresh token must work.
+    response = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": new_refresh_token},
+    )
+
+    assert response.status_code == 200
+
+
+def test_password_change_revokes_refresh_tokens(client):
+    response = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "password@example.com",
+            "password": "TestPassword123!",
+            "first_name": "Password",
+            "last_name": "Test",
+        },
+    )
+    assert response.status_code == 201
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "password@example.com",
+            "password": "TestPassword123!",
+        },
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    access_token = data["access_token"]
+    refresh_token = data["refresh_token"]
+
+    response = client.patch(
+        "/api/v1/auth/me/password",
+        json={
+            "current_password": "TestPassword123!",
+            "new_password": "NewTestPassword123!",
+        },
+        headers={
+            "Authorization": f"Bearer {access_token}",
+        },
+    )
+
+    assert response.status_code == 200
+
+    # Old refresh token must be revoked after password change.
+    response = client.post(
+        "/api/v1/auth/refresh",
+        json={"refresh_token": refresh_token},
+    )
+
+    assert response.status_code == 401

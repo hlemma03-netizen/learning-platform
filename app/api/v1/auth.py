@@ -1,75 +1,74 @@
+import jwt
+
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import hash_password
-from app.models.user import User
-from app.schemas.user import UserCreate, UserResponse
-from app.core.dependencies import require_student
-
-from app.core.security import verify_password, hash_password
-from app.schemas.user import ChangePasswordRequest
-from app.schemas.user import UserUpdate
-
-from app.core.dependencies import get_current_user
-
+from app.core.dependencies import (
+    get_current_user,
+    require_admin,
+    require_student,
+    require_teacher,
+)
 from app.core.security import (
+    ALGORITHM,
     create_access_token,
     create_refresh_token,
     hash_password,
     verify_password,
 )
+from app.models.refresh_token import RefreshToken
+from app.models.user import User
 from app.schemas.user import (
+    ChangePasswordRequest,
     LoginRequest,
+    RefreshTokenRequest,
     TokenResponse,
+    UserCreate,
+    UserResponse,
+    UserUpdate,
 )
-import jwt
-
-from app.core.config import settings
-from app.core.security import ALGORITHM
-from app.core.security import create_access_token
-from app.core.security import create_refresh_token
-from app.schemas.user import RefreshTokenRequest
 
 router = APIRouter(
     prefix="/auth",
     tags=["Authentication"],
 )
 
-@router.post("/login", response_model=TokenResponse)
-def login(
-    login_data: LoginRequest,
-    db: Session = Depends(get_db),
+
+def store_refresh_token(
+    db: Session,
+    user_id,
 ):
-    user = (
-        db.query(User)
-        .filter(User.email == login_data.email)
-        .first()
+    token, jti, expires_at = create_refresh_token(str(user_id))
+
+    refresh_token = RefreshToken(
+        jti=jti,
+        user_id=user_id,
+        expires_at=expires_at,
     )
 
-    if not user or not verify_password(
-        login_data.password,
-        user.password_hash,
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
+    db.add(refresh_token)
+
+    return token
+
+
+def revoke_all_refresh_tokens(
+    db: Session,
+    user_id,
+):
+    db.execute(
+        update(RefreshToken)
+        .where(
+            RefreshToken.user_id == user_id,
+            RefreshToken.revoked_at.is_(None),
         )
+        .values(revoked_at=datetime.now(timezone.utc))
+    )
 
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive",
-        )
-
-    access_token = create_access_token(str(user.id))
-    refresh_token = create_refresh_token(str(user.id))
-
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer",
-    }
 
 @router.post(
     "/register",
@@ -105,11 +104,208 @@ def register(
 
     return user
 
+
+@router.post("/login", response_model=TokenResponse)
+def login(
+    login_data: LoginRequest,
+    db: Session = Depends(get_db),
+):
+    user = (
+        db.query(User)
+        .filter(User.email == login_data.email)
+        .first()
+    )
+
+    if not user or not verify_password(
+        login_data.password,
+        user.password_hash,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive",
+        )
+
+    refresh_token = store_refresh_token(db, user.id)
+
+    access_token = create_access_token(str(user.id))
+
+    db.commit()
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+    }
+
+
+@router.post("/refresh", response_model=TokenResponse)
+def refresh_access_token(
+    token_data: RefreshTokenRequest,
+    db: Session = Depends(get_db),
+):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid refresh token",
+    )
+
+    try:
+        payload = jwt.decode(
+            token_data.refresh_token,
+            settings.secret_key,
+            algorithms=[ALGORITHM],
+        )
+
+        user_id = payload.get("sub")
+        token_type = payload.get("type")
+        jti = payload.get("jti")
+
+        if (
+            user_id is None
+            or token_type != "refresh"
+            or jti is None
+        ):
+            raise credentials_exception
+
+    except jwt.InvalidTokenError:
+        raise credentials_exception
+
+    refresh_token_record = (
+        db.query(RefreshToken)
+        .filter(
+            RefreshToken.jti == jti,
+            RefreshToken.user_id == user_id,
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if refresh_token_record is None:
+        raise credentials_exception
+
+    if refresh_token_record.revoked_at is not None:
+        raise credentials_exception
+
+    if refresh_token_record.expires_at <= datetime.now(timezone.utc):
+        refresh_token_record.revoked_at = datetime.now(timezone.utc)
+        db.commit()
+        raise credentials_exception
+
+    user = (
+        db.query(User)
+        .filter(User.id == user_id)
+        .first()
+    )
+
+    if user is None:
+        raise credentials_exception
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Inactive user",
+        )
+
+    # Rotate the refresh token.
+    refresh_token_record.revoked_at = datetime.now(timezone.utc)
+
+    new_refresh_token = store_refresh_token(
+        db,
+        user.id,
+    )
+
+    new_access_token = create_access_token(
+        str(user.id)
+    )
+
+    db.commit()
+
+    return {
+        "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
+        "token_type": "bearer",
+    }
+
+
 @router.get("/me", response_model=UserResponse)
 def get_my_profile(
     current_user: User = Depends(get_current_user),
 ):
     return current_user
+
+
+@router.patch("/me", response_model=UserResponse)
+def update_my_profile(
+    user_data: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if user_data.first_name is not None:
+        current_user.first_name = user_data.first_name
+
+    if user_data.last_name is not None:
+        current_user.last_name = user_data.last_name
+
+    db.commit()
+    db.refresh(current_user)
+
+    return current_user
+
+
+@router.patch("/me/password")
+def change_password(
+    password_data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not verify_password(
+        password_data.current_password,
+        current_user.password_hash,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+
+    current_user.password_hash = hash_password(
+        password_data.new_password,
+    )
+
+    revoke_all_refresh_tokens(
+        db,
+        current_user.id,
+    )
+
+    db.commit()
+
+    return {
+        "message": "Password changed successfully",
+    }
+
+
+@router.patch("/me/deactivate")
+def deactivate_my_account(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    current_user.is_active = False
+
+    revoke_all_refresh_tokens(
+        db,
+        current_user.id,
+    )
+
+    db.commit()
+
+    return {
+        "message": "Account deactivated successfully",
+    }
+
 
 @router.get("/student-test")
 def student_test(
@@ -119,8 +315,6 @@ def student_test(
         "message": "Student access granted",
         "user": current_user.email,
     }
-
-from app.core.dependencies import require_teacher, require_admin
 
 
 @router.get("/teacher-test")
@@ -142,60 +336,6 @@ def admin_test(
         "user": current_user.email,
     }
 
-@router.patch("/me", response_model=UserResponse)
-def update_my_profile(
-    user_data: UserUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    if user_data.first_name is not None:
-        current_user.first_name = user_data.first_name
-
-    if user_data.last_name is not None:
-        current_user.last_name = user_data.last_name
-
-    db.commit()
-    db.refresh(current_user)
-
-    return current_user
-
-@router.patch("/me/password")
-def change_password(
-    password_data: ChangePasswordRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    if not verify_password(
-        password_data.current_password,
-        current_user.password_hash,
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect",
-        )
-
-    current_user.password_hash = hash_password(
-        password_data.new_password
-    )
-
-    db.commit()
-
-    return {
-        "message": "Password changed successfully"
-    }
-
-@router.patch("/me/deactivate")
-def deactivate_my_account(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    current_user.is_active = False
-
-    db.commit()
-
-    return {
-        "message": "Account deactivated successfully"
-    }
 
 @router.get("/users", response_model=list[UserResponse])
 def get_all_users(
@@ -203,46 +343,3 @@ def get_all_users(
     db: Session = Depends(get_db),
 ):
     return db.query(User).all()
-
-@router.post("/refresh", response_model=TokenResponse)
-def refresh_access_token(
-    token_data: RefreshTokenRequest,
-    db: Session = Depends(get_db),
-):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid refresh token",
-    )
-
-    try:
-        payload = jwt.decode(
-            token_data.refresh_token,
-            settings.secret_key,
-            algorithms=[ALGORITHM],
-        )
-
-        user_id = payload.get("sub")
-        token_type = payload.get("type")
-
-        if user_id is None or token_type != "refresh":
-            raise credentials_exception
-
-    except jwt.InvalidTokenError:
-        raise credentials_exception
-
-    user = db.query(User).filter(User.id == user_id).first()
-
-    if user is None:
-        raise credentials_exception
-
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Inactive user",
-        )
-
-    return {
-        "access_token": create_access_token(str(user.id)),
-        "refresh_token": create_refresh_token(str(user.id)),
-        "token_type": "bearer",
-    }

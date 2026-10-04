@@ -25,6 +25,7 @@ from app.models.course_review import CourseReview
 
 from app.models.lesson_progress import LessonProgress
 from app.models.certificate import Certificate
+from app.models.refresh_token import RefreshToken
 
 config = context.config
 
