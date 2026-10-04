@@ -37,3 +37,6 @@ class UserUpdate(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str

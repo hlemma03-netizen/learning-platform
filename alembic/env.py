@@ -20,6 +20,12 @@ from app.models.quiz_option import QuizOption
 from app.models.quiz_attempt import QuizAttempt
 from app.models.attempt_answer import AttemptAnswer
 
+from app.models.notification import Notification
+from app.models.course_review import CourseReview
+
+from app.models.lesson_progress import LessonProgress
+from app.models.certificate import Certificate
+
 config = context.config
 
 if config.config_file_name is not None:

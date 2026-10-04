@@ -23,6 +23,13 @@ from app.schemas.user import (
     LoginRequest,
     TokenResponse,
 )
+import jwt
+
+from app.core.config import settings
+from app.core.security import ALGORITHM
+from app.core.security import create_access_token
+from app.core.security import create_refresh_token
+from app.schemas.user import RefreshTokenRequest
 
 router = APIRouter(
     prefix="/auth",
@@ -196,3 +203,46 @@ def get_all_users(
     db: Session = Depends(get_db),
 ):
     return db.query(User).all()
+
+@router.post("/refresh", response_model=TokenResponse)
+def refresh_access_token(
+    token_data: RefreshTokenRequest,
+    db: Session = Depends(get_db),
+):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid refresh token",
+    )
+
+    try:
+        payload = jwt.decode(
+            token_data.refresh_token,
+            settings.secret_key,
+            algorithms=[ALGORITHM],
+        )
+
+        user_id = payload.get("sub")
+        token_type = payload.get("type")
+
+        if user_id is None or token_type != "refresh":
+            raise credentials_exception
+
+    except jwt.InvalidTokenError:
+        raise credentials_exception
+
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if user is None:
+        raise credentials_exception
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Inactive user",
+        )
+
+    return {
+        "access_token": create_access_token(str(user.id)),
+        "refresh_token": create_refresh_token(str(user.id)),
+        "token_type": "bearer",
+    }

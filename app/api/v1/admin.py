@@ -21,6 +21,10 @@ from app.schemas.admin import (
     AdminUserStatusUpdate,
     PlatformStatsResponse,
 )
+from app.models.attempt_answer import AttemptAnswer
+from app.schemas.quiz import AttemptAnswerResponse, QuizAttemptResponse
+from app.schemas.submission import SubmissionResponse
+
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -229,4 +233,61 @@ def platform_stats(
         total_submissions=total_submissions,
         total_quizzes=total_quizzes,
         total_quiz_attempts=total_quiz_attempts,
+    )
+
+@router.get(
+    "/submissions",
+    response_model=list[SubmissionResponse],
+)
+def list_all_submissions(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return (
+        db.query(Submission)
+        .order_by(Submission.submitted_at.desc())
+        .all()
+    )
+
+
+@router.get(
+    "/quiz-attempts",
+    response_model=list[QuizAttemptResponse],
+)
+def list_all_quiz_attempts(
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return (
+        db.query(QuizAttempt)
+        .order_by(QuizAttempt.started_at.desc())
+        .all()
+    )
+
+
+@router.get(
+    "/quiz-attempts/{attempt_id}/answers",
+    response_model=list[AttemptAnswerResponse],
+)
+def list_quiz_attempt_answers(
+    attempt_id: UUID,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    attempt = (
+        db.query(QuizAttempt)
+        .filter(QuizAttempt.id == attempt_id)
+        .first()
+    )
+
+    if attempt is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Quiz attempt not found",
+        )
+
+    return (
+        db.query(AttemptAnswer)
+        .filter(AttemptAnswer.attempt_id == attempt_id)
+        .all()
     )
